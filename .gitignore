@@ -1,0 +1,32 @@
+# Build outputs
+bin/
+x64/
+Debug/
+Release/
+
+# Visual Studio generated files
+*.vcxproj.user
+*.ilk
+*.pdb
+*.idb
+*.obj
+*.exe
+*.dll
+*.lib
+*.log
+*.tlog/
+*.recipe
+*.lastbuildstate
+vc143.*
+
+# Temporary files
+*.tmp
+*.temp
+
+# IDE files
+.vs/
+.vscode/
+
+# OS generated files
+Thumbs.db
+.DS_Store
