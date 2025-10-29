@@ -185,6 +185,8 @@
 typedef struct BlockCnt {
     struct BlockCnt *previous;  /**< 指向父级代码块的指针，形成作用域链 */
     int breaklist;              /**< break语句的跳转目标列表，用于循环控制 */
+    int continuelist;           /**< continue语句的跳转目标列表，用于循环控制 */
+    int loop_start;             /**< 循环开始位置的指令地址，作为continue的跳转目标 */
     lu_byte nactvar;            /**< 进入此代码块时的活跃局部变量数量 */
     lu_byte upval;              /**< 标志：代码块中是否有变量被内层函数引用 */
     lu_byte isbreakable;        /**< 标志：代码块是否为可break的循环结构 */
@@ -1769,6 +1771,8 @@ static void enterlevel (LexState *ls) {
  */
 static void enterblock (FuncState *fs, BlockCnt *bl, lu_byte isbreakable) {
     bl->breaklist = NO_JUMP;
+    bl->continuelist = NO_JUMP;
+    bl->loop_start = 0;
     bl->isbreakable = isbreakable;
     bl->nactvar = fs->nactvar;
     bl->upval = 0;
@@ -4724,6 +4728,125 @@ static void breakstat (LexState *ls) {
     luaK_concat(fs, &bl->breaklist, luaK_jump(fs));
 }
 
+/**
+ * @brief continue语句解析：处理loop中的continue控制
+ *
+ * 详细说明：
+ * 这个函数处理continue语句，生成相应的跳转代码。它与breakstat()
+ * 结构相似，但跳转目标是循环开始位置而不是循环结束。
+ *
+ * 语法规则：
+ * continuestat -> CONTINUE
+ * - CONTINUE: continue关键字
+ *
+ * 作用：
+ * - 在循环中跳过后续代码，直接跳转到下一次迭代
+ * - 支持while、for、repeat等各种循环结构
+ * - 跳转目标根据循环类型而不同
+ *
+ * 查找循环：
+ * - 从当前代码块开始向外查找
+ * - 寻找isbreakable标志为真的代码块
+ * - 只有循环代码块可以使用continue
+ *
+ * Upvalue处理：
+ * - 检查路径上是否有upvalue引用
+ * - 生成OP_CLOSE指令关闭upvalue
+ * - 确保变量生命周期的正确性
+ *
+ * 跳转管理：
+ * - luaK_jump: 生成无条件跳转指令
+ * - luaK_concat: 将跳转添加到continue列表
+ * - 支持多个continue语句的统一处理
+ * - 稍后会通过luaK_patchlist()将所有continue跳转指向循环开始
+ *
+ * 错误检查：
+ * - 验证continue语句在循环内
+ * - 提供准确的错误消息"no loop to continue"
+ * - 防止在非循环上下文中使用continue
+ *
+ * 代码块类型支持：
+ * - 可continue：while、for、repeat循环
+ * - 不可continue：if、function、do代码块
+ * - 通过isbreakable标志区分
+ *
+ * 不同循环类型的行为：
+ * - while: 跳转到条件检查位置，再次评估循环条件
+ * - repeat-until: 跳转到循环体开始位置，再执行循环体
+ * - for: 跳转到循环变量更新位置
+ * - 通过loop_start字段保存各类型的正确位置
+ *
+ * 内存管理：
+ * - OP_CLOSE指令处理局部变量清理
+ * - 确保upvalue的正确关闭
+ * - 异常安全的资源管理
+ *
+ * 使用场景：
+ * - while循环：while condition do ... continue ... end
+ * - for循环：for i=1,10 do ... continue ... end
+ * - repeat循环：repeat ... continue ... until condition
+ * - 嵌套循环：在内层循环中继续外层循环（仅适用最近的循环）
+ *
+ * 与break的区别：
+ * - break: 跳出循环，继续循环后的代码
+ * - continue: 继续下一次循环迭代
+ * - break修改breaklist，continue修改continuelist
+ * - break的目标是循环退出点，continue的目标是循环开始位置
+ *
+ * 性能特征：
+ * - 高效的跳转代码生成
+ * - 最小化upvalue关闭开销
+ * - 支持编译时跳转优化
+ *
+ * 限制：
+ * - 不能在函数边界外跳转
+ * - 不能跳出非循环代码块
+ * - 遵循结构化编程原则
+ *
+ * @param ls 词法状态，提供解析上下文
+ *
+ * @note 函数可能生成OP_CLOSE和跳转指令
+ * @see BlockCnt, breakstat, luaK_jump, luaK_concat, OP_CLOSE, loop_start, continuelist
+ *
+ * @example
+ * // continue语句的使用：
+ * // while condition do
+ * //   if skip_case then
+ * //     continue  -- 跳过后续代码，直接进入下一次迭代
+ * //   end
+ * //   -- 这段代码会被跳过
+ * // end
+ *
+ * // for循环中的continue：
+ * // for i=1,10 do
+ * //   if i % 2 == 0 then
+ * //     continue  -- 跳过偶数的处理
+ * //   end
+ * //   print(i)
+ * // end
+ *
+ * // 嵌套循环中的continue：
+ * // for i=1,10 do
+ * //   for j=1,10 do
+ * //     if found then continue end  -- 只作用于内层循环
+ * //   end
+ * // end
+ */
+static void continuestat (LexState *ls) {
+    FuncState *fs = ls->fs;
+    BlockCnt *bl = fs->bl;
+    int upval = 0;
+    while (bl && !bl->isbreakable) {
+        upval |= bl->upval;
+        bl = bl->previous;
+    }
+    if (!bl)
+        luaX_syntaxerror(ls, "no loop to continue");
+    if (upval)
+        luaK_codeABC(fs, OP_CLOSE, bl->nactvar, 0, 0);
+    luaK_concat(fs, &bl->continuelist, luaK_jump(fs));
+}
+
 
 /**
  * @brief while循环解析：处理while语句的完整结构
@@ -4814,9 +4937,11 @@ static void whilestat (LexState *ls, int line) {
     whileinit = luaK_getlabel(fs);
     condexit = cond(ls);
     enterblock(fs, &bl, 1);
+    bl.loop_start = whileinit;
     checknext(ls, TK_DO);
     block(ls);
     luaK_patchlist(fs, luaK_jump(fs), whileinit);
+    luaK_patchlist(fs, bl.continuelist, whileinit);
     check_match(ls, TK_END, TK_WHILE, line);
     leaveblock(fs);
     luaK_patchtohere(fs, condexit);
@@ -4915,6 +5040,7 @@ static void repeatstat (LexState *ls, int line) {
     int repeat_init = luaK_getlabel(fs);
     BlockCnt bl1, bl2;
     enterblock(fs, &bl1, 1);
+    bl1.loop_start = repeat_init;
     enterblock(fs, &bl2, 0);
     luaX_next(ls);
     chunk(ls);
@@ -4922,12 +5048,14 @@ static void repeatstat (LexState *ls, int line) {
     condexit = cond(ls);
     if (!bl2.upval) {
         leaveblock(fs);
+        luaK_patchlist(ls->fs, bl1.continuelist, repeat_init);
         luaK_patchlist(ls->fs, condexit, repeat_init);
     }
     else {
         breakstat(ls);
         luaK_patchtohere(ls->fs, condexit);
         leaveblock(fs);
+        luaK_patchlist(ls->fs, bl1.continuelist, repeat_init);
         luaK_patchlist(ls->fs, luaK_jump(fs), repeat_init);
     }
     leaveblock(fs);
@@ -5078,7 +5206,8 @@ static void forbody (LexState *ls, int base, int line, int nvars, int isnum) {
     adjustlocalvars(ls, 3);
     checknext(ls, TK_DO);
     prep = isnum ? luaK_codeAsBx(fs, OP_FORPREP, base, NO_JUMP) : luaK_jump(fs);
-    enterblock(fs, &bl, 0);
+    enterblock(fs, &bl, 1);
+    bl.loop_start = prep + 1;
     adjustlocalvars(ls, nvars);
     luaK_reserveregs(fs, nvars);
     block(ls);
@@ -5087,6 +5216,7 @@ static void forbody (LexState *ls, int base, int line, int nvars, int isnum) {
     endfor = (isnum) ? luaK_codeAsBx(fs, OP_FORLOOP, base, NO_JUMP) :
                        luaK_codeABC(fs, OP_TFORLOOP, base, 0, nvars);
     luaK_fixline(fs, line);
+    luaK_patchlist(fs, bl.continuelist, endfor);
     luaK_patchlist(fs, (isnum ? endfor : luaK_jump(fs)), prep + 1);
 }
 
@@ -6183,6 +6313,11 @@ static int statement (LexState *ls) {
             luaX_next(ls);
             breakstat(ls);
             return 1;
+        }
+        case TK_CONTINUE: {
+            luaX_next(ls);
+            continuestat(ls);
+            return 0;
         }
         default: {
             exprstat(ls);

@@ -170,6 +170,13 @@ enum RESERVED {
     TK_BREAK,
     
     /**
+     * @brief 跳过当前迭代：continue关键字
+     * 用于跳过当前循环迭代，继续下一次循环
+     * 仅在循环内使用（for、while、repeat）
+     */
+    TK_CONTINUE,
+    
+    /**
      * @brief 语句块开始：do关键字
      * 标记语句块的开始，通常与end配对使用
      */

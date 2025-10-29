@@ -168,7 +168,7 @@
  * - 数组是const类型，在程序运行期间不会被修改
  */
 const char *const luaX_tokens[] = {
-    "and", "break", "do", "else", "elseif",
+    "and", "break", "continue", "do", "else", "elseif",
     "end", "false", "for", "function", "if",
     "in", "local", "nil", "not", "or", "repeat",
     "return", "then", "true", "until", "while",

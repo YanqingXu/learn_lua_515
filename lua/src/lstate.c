@@ -540,12 +540,10 @@ LUA_API lua_State *lua_newstate(lua_Alloc f, void *ud) {
 
     // 受保护的初始化
     if (luaD_rawrunprotected(L, f_luaopen, NULL) != 0) {
-        // 初始化失败，清理资源
-        close_state(L);
+        close_state(L);                         // 初始化失败，清理资源
         L = NULL;
     } else {
-        // 用户状态初始化
-        luai_userstateopen(L);
+        luai_userstateopen(L);                  // 用户状态初始化
     }
 
     return L;

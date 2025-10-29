@@ -1,4 +1,4 @@
-﻿/**
+/**
  * @file lundump.h
  * @brief Lua字节码处理接口：实现预编译Lua脚本的序列化和反序列化
  * 
