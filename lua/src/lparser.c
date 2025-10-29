@@ -5038,6 +5038,7 @@ static void repeatstat (LexState *ls, int line) {
     int condexit;
     FuncState *fs = ls->fs;
     int repeat_init = luaK_getlabel(fs);
+    int cond_start;
     BlockCnt bl1, bl2;
     enterblock(fs, &bl1, 1);
     bl1.loop_start = repeat_init;
@@ -5045,17 +5046,18 @@ static void repeatstat (LexState *ls, int line) {
     luaX_next(ls);
     chunk(ls);
     check_match(ls, TK_UNTIL, TK_REPEAT, line);
+    cond_start = luaK_getlabel(fs);  /* continue jumps to condition */
     condexit = cond(ls);
     if (!bl2.upval) {
         leaveblock(fs);
-        luaK_patchlist(ls->fs, bl1.continuelist, repeat_init);
+        luaK_patchlist(ls->fs, bl1.continuelist, cond_start);
         luaK_patchlist(ls->fs, condexit, repeat_init);
     }
     else {
         breakstat(ls);
         luaK_patchtohere(ls->fs, condexit);
         leaveblock(fs);
-        luaK_patchlist(ls->fs, bl1.continuelist, repeat_init);
+        luaK_patchlist(ls->fs, bl1.continuelist, cond_start);
         luaK_patchlist(ls->fs, luaK_jump(fs), repeat_init);
     }
     leaveblock(fs);
